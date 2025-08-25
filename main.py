@@ -10,7 +10,7 @@ from urllib.parse import urljoin, urlparse
 import feedparser
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask
+from flask import Flask, request, Response
 from telegram import BotCommand, Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -52,10 +52,24 @@ logger = logging.getLogger("newsbot")
 session = requests.Session()
 session.headers.update({"User-Agent": USER_AGENT})
 
+# Глобальная переменная для приложения PTB
+app = None
+
 # Маршрут для корневого URL, чтобы UptimeRobot и браузер не получали 404
 @flask_app.route('/')
 def home():
     return "Travel bot is alive!", 200
+
+# Маршрут для обработки вебхука Telegram
+@flask_app.route('/webhook', methods=['POST'])
+async def webhook():
+    global app
+    if not app:
+        return Response("Bot not initialized", status=503)
+    update = Update.de_json(request.get_json(force=True), app.bot)
+    if update:
+        await app.process_update(update)
+    return Response("OK", status=200)
 
 # ========================
 # ХРАНИЛИЩЕ ДЕДУПЛИКАЦИИ
@@ -369,6 +383,7 @@ async def main():
     """
     Точка входа: настраивает webhook, команды и периодические задачи.
     """
+    global app
     if not BOT_TOKEN:
         raise SystemExit("❌ Укажите BOT_TOKEN в переменной окружения.")
     if not CHANNEL_ID:
@@ -379,7 +394,6 @@ async def main():
     init_db()
 
     # Создаем приложение PTB
-    global app
     app = Application.builder().token(BOT_TOKEN).build()
 
     # Регистрируем команды
@@ -409,39 +423,17 @@ async def main():
     await app.initialize()
     await app.start()
 
-    # Запускаем Flask в отдельном потоке
-    from threading import Thread
-    def run_flask():
-        flask_app.run(host="0.0.0.0", port=PORT, debug=False)
-    
-    flask_thread = Thread(target=run_flask)
-    flask_thread.start()
+    # Запускаем Flask-сервер
+    flask_app.run(host="0.0.0.0", port=PORT, debug=False)
 
-    # Запускаем webhook для PTB
-    try:
-        await app.updater.start_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            url_path=webhook_path,
-            webhook_url=full_webhook_url,
-        )
-        logger.info("Бот запущен. Ожидание обновлений...")
-    except Exception as e:
-        logger.error(f"Ошибка при запуске webhook: {e}")
-        raise
-
-    # Держим приложение активным
-    while True:
-        await asyncio.sleep(3600)
-
-async def stop(app: Application):
+async def stop():
     """
     Корректное завершение работы приложения.
     """
+    global app
     try:
         if app and app.running:
             await app.stop()
-            await app.updater.stop()
             await app.shutdown()
             logger.info("Бот остановлен.")
         else:
@@ -450,16 +442,15 @@ async def stop(app: Application):
         logger.error(f"Ошибка при остановке приложения: {e}")
 
 if __name__ == "__main__":
-    app = None
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(main())
     except KeyboardInterrupt:
         logger.info("Получен сигнал завершения.")
-        loop.run_until_complete(stop(app))
+        loop.run_until_complete(stop())
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        loop.run_until_complete(stop(app))
+        loop.run_until_complete(stop())
     finally:
         loop.close()
