@@ -1,3 +1,10 @@
+# ==================================================================================================
+# NewsBot — телеграм-бот, который периодически проверяет новостные сайты и постит анонсы в канал.
+# --------------------------------------------------------------------------------------------------
+# Адаптировано для Render.com: использует webhook, совместим с бесплатным планом.
+# Исправлено управление циклом событий для избежания ошибки "event loop is already running".
+# ==================================================================================================
+
 import asyncio
 import logging
 import os
@@ -17,39 +24,28 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # ========================
 # НАСТРОЙКИ
 # ========================
-# Токен бота из переменной окружения (задаётся на Render в Environment Variables).
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-# ID канала для публикации (публичный: @mychannel, приватный: -100xxxxxxxxxxxx).
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-# Полный публичный URL сервиса на Render, например, https://your-bot.onrender.com.
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-# Порт для webhook-сервера (Render задаёт через переменную окружения PORT).
-PORT = int(os.getenv("PORT", 8443))  # Fallback на 8443, если PORT не задан.
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Например, https://your-bot.onrender.com
+PORT = int(os.getenv("PORT", 8443))  # Render задаёт PORT, fallback на 8443
 
-# Интервал между проверками источников (в секундах, по умолчанию 1 час).
-CHECK_INTERVAL_SECONDS = 60 * 60
-# Путь к SQLite-базе для дедупликации (хранится локально на Render).
+CHECK_INTERVAL_SECONDS = 60 * 60  # Проверка каждые 60 минут
 DB_PATH = "posted.db"
-# Таймаут для HTTP-запросов.
 REQUEST_TIMEOUT = 15
-# User-Agent для запросов, чтобы сайты не блокировали.
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
-# Список источников новостей (RSS + HTML-фолбэк).
 SOURCES = [
     {"name": "TourDom", "rss": "https://www.tourdom.ru/news/rss/", "html": "https://www.tourdom.ru/news/"},
     {"name": "Tourister", "rss": "https://www.tourister.ru/news/rss", "html": "https://www.tourister.ru/news"},
     {"name": "Lenta: Путешествия", "rss": "https://lenta.ru/rss/rubrics/travel/", "html": "https://lenta.ru/rubrics/travel/"},
 ]
 
-# Настройка логирования (логи видны в dashboard Render).
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("newsbot")
 
-# HTTP-сессия с повторным использованием соединений.
 session = requests.Session()
 session.headers.update({"User-Agent": USER_AGENT})
 
@@ -58,7 +54,7 @@ session.headers.update({"User-Agent": USER_AGENT})
 # ========================
 def init_db():
     """
-    Создаёт SQLite-базу для хранения уже опубликованных URL (дедупликация).
+    Создаёт SQLite-базу для хранения уже опубликованных URL.
     """
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -87,7 +83,7 @@ def already_posted(url: str) -> bool:
 
 def mark_posted(url: str, source: str):
     """
-    Отмечает URL как опубликованный, сохраняя источник и время в UTC.
+    Отмечает URL как опубликованный.
     """
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -103,7 +99,7 @@ def mark_posted(url: str, source: str):
 # ========================
 def absolute(base: str, href: str) -> str:
     """
-    Преобразует относительную ссылку в абсолютную на основе базового URL.
+    Преобразует относительную ссылку в абсолютную.
     """
     return href if (href or "").startswith("http") else urljoin(base, href or "")
 
@@ -118,7 +114,7 @@ def same_host(url: str, host_tail: str) -> bool:
 
 def get_html(url: str) -> Optional[BeautifulSoup]:
     """
-    Выполняет GET-запрос и возвращает распарсенный HTML (или None при ошибке).
+    Выполняет GET-запрос и возвращает распарсенный HTML.
     """
     try:
         r = session.get(url, timeout=REQUEST_TIMEOUT)
@@ -130,7 +126,7 @@ def get_html(url: str) -> Optional[BeautifulSoup]:
 
 def get_og_image(url: str) -> Optional[str]:
     """
-    Извлекает URL картинки из meta og:image или og:image:secure_url.
+    Извлекает URL картинки из meta og:image.
     """
     try:
         r = session.get(url, timeout=REQUEST_TIMEOUT)
@@ -148,7 +144,7 @@ def get_og_image(url: str) -> Optional[str]:
 # ========================
 def fetch_via_rss(rss_url: str) -> List[Dict]:
     """
-    Парсит RSS-ленту, возвращает список новостей {title, link, summary}.
+    Парсит RSS-ленту, возвращает список новостей.
     """
     items: List[Dict] = []
     try:
@@ -169,7 +165,7 @@ def fetch_via_rss(rss_url: str) -> List[Dict]:
 # ========================
 def fetch_html_tourdom(list_url: str) -> List[Dict]:
     """
-    Парсер HTML для TourDom: ищет ссылки в article/.news-list/.news.
+    Парсер HTML для TourDom.
     """
     soup = get_html(list_url)
     if not soup:
@@ -205,7 +201,7 @@ def fetch_html_tourdom(list_url: str) -> List[Dict]:
 
 def fetch_html_tourister(list_url: str) -> List[Dict]:
     """
-    Парсер HTML для Tourister: ищет ссылки с '/news/'.
+    Парсер HTML для Tourister.
     """
     soup = get_html(list_url)
     if not soup:
@@ -233,7 +229,7 @@ def fetch_html_tourister(list_url: str) -> List[Dict]:
 
 def fetch_html_lenta(list_url: str) -> List[Dict]:
     """
-    Парсер HTML для Lenta/Travel: ищет ссылки с '/news/'.
+    Парсер HTML для Lenta/Travel.
     """
     soup = get_html(list_url)
     if not soup:
@@ -272,7 +268,7 @@ def fetch_html_lenta(list_url: str) -> List[Dict]:
 
 def fetch_via_html(source: Dict) -> List[Dict]:
     """
-    Выбирает подходящий HTML-парсер по домену или использует универсальный.
+    Выбирает подходящий HTML-парсер по домену.
     """
     url = source["html"]
     host = urlparse(url).netloc
@@ -309,7 +305,7 @@ def fetch_source_items(source: Dict) -> List[Dict]:
 # ========================
 async def post_news(context: ContextTypes.DEFAULT_TYPE, item: Dict, source_name: str):
     """
-    Отправляет новость в канал с картинкой (если есть) и HTML-подписью.
+    Отправляет новость в канал с картинкой и HTML-подписью.
     """
     title = item["title"].strip()
     link = item["link"].strip()
@@ -351,7 +347,7 @@ async def post_news(context: ContextTypes.DEFAULT_TYPE, item: Dict, source_name:
 # ========================
 async def check_sources_job(context: ContextTypes.DEFAULT_TYPE):
     """
-    Периодически проверяет источники, публикует новые новости (макс. 5 на источник).
+    Периодически проверяет источники, публикует новые новости.
     """
     logger.info("Checking sources...")
     for src in SOURCES:
@@ -389,11 +385,7 @@ async def checknow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========================
 async def main():
     """
-    Точка входа:
-    - Проверяет наличие BOT_TOKEN и CHANNEL_ID.
-    - Инициализирует базу SQLite.
-    - Настраивает webhook для работы на Render.
-    - Регистрирует команды и периодическую задачу.
+    Точка входа: настраивает webhook, команды и периодические задачи.
     """
     if not BOT_TOKEN:
         raise SystemExit("❌ Укажите BOT_TOKEN в переменной окружения.")
@@ -415,7 +407,7 @@ async def main():
     # Настраиваем периодическую задачу
     app.job_queue.run_repeating(check_sources_job, interval=CHECK_INTERVAL_SECONDS, first=10)
 
-    # Регистрируем команды в Telegram UI
+    # Регистрируем команды в Telegram
     await app.bot.set_my_commands(
         [
             BotCommand("start", "Поприветствовать"),
@@ -425,18 +417,51 @@ async def main():
     )
 
     # Настраиваем webhook
-    webhook_path = "/webhook"  # Произвольный путь для webhook
+    webhook_path = "/webhook"
     full_webhook_url = f"{WEBHOOK_URL}{webhook_path}"
     await app.bot.set_webhook(url=full_webhook_url)
     logger.info(f"Webhook установлен на {full_webhook_url}")
 
-    # Запускаем приложение с webhook
-    await app.run_webhook(
+    # Инициализируем приложение
+    await app.initialize()
+    await app.start()
+
+    # Запускаем webhook-сервер
+    await app.updater.start_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=webhook_path,
         webhook_url=full_webhook_url,
     )
 
+    logger.info("Бот запущен. Ожидание обновлений...")
+
+    # Держим приложение активным (бесконечный цикл)
+    while True:
+        await asyncio.sleep(3600)  # Периодическая проверка, чтобы не завершать цикл
+
+async def stop():
+    """
+    Корректное завершение работы приложения.
+    """
+    app = Application.builder().token(BOT_TOKEN).build()
+    await app.stop()
+    await app.updater.stop()
+    await app.shutdown()
+    logger.info("Бот остановлен.")
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            logger.warning("Цикл событий уже запущен, использую существующий.")
+            # Запускаем main как задачу в существующем цикле
+            loop.create_task(main())
+        else:
+            loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        logger.info("Получен сигнал завершения.")
+        loop.run_until_complete(stop())
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        loop.run_until_complete(stop())
