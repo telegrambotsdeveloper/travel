@@ -1,3 +1,10 @@
+# ==================================================================================================
+# NewsBot — телеграм-бот, который периодически проверяет новостные сайты и постит анонсы в канал.
+# --------------------------------------------------------------------------------------------------
+# Адаптировано для Render.com: использует webhook, совместим с бесплатным планом.
+# Исправлены проблемы с tourister.ru, исключены политические новости, удалён lenta.ru.
+# ==================================================================================================
+
 import asyncio
 import logging
 import os
@@ -18,7 +25,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # НАСТРОЙКИ
 # ========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
+CHANNEL_ID = os.getenv("CHANNEL_ID")  # Проверьте: @YourChannelName или -100xxxxxxxxxxxx
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Например, https://travel-9x10.onrender.com
 PORT = int(os.getenv("PORT", 8443))  # Render задаёт PORT, fallback на 8443
 
@@ -30,10 +37,16 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
+# Список политических ключевых слов для фильтрации
+POLITICAL_KEYWORDS = [
+    "политика", "санкции", "президент", "правительство", "выборы", "протест", "митинг", 
+    "война", "конфликт", "дипломатия", "внешняя политика", "геополитика", "парламент", 
+    "депутат", "кремль", "белый дом", "угрозы", "международные отношения"
+]
+
 SOURCES = [
     {"name": "TourDom", "rss": "https://www.tourdom.ru/news/rss/", "html": "https://www.tourdom.ru/news/"},
-    {"name": "Tourister", "rss": "https://www.tourister.ru/news/rss", "html": "https://www.tourister.ru/news"},
-    {"name": "Lenta: Путешествия", "rss": "https://lenta.ru/rss/rubrics/travel/", "html": "https://lenta.ru/rubrics/travel/"},
+    {"name": "Tourister", "rss": "https://www.tourister.ru/publications/rss", "html": "https://www.tourister.ru/publications"},
 ]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -133,6 +146,16 @@ def get_og_image(url: str) -> Optional[str]:
     return None
 
 # ========================
+# ФИЛЬТРАЦИЯ ПОЛИТИЧЕСКИХ НОВОСТЕЙ
+# ========================
+def is_political(title: str) -> bool:
+    """
+    Проверяет, содержит ли заголовок политические ключевые слова.
+    """
+    title_lower = title.lower()
+    return any(keyword in title_lower for keyword in POLITICAL_KEYWORDS)
+
+# ========================
 # ПАРСИНГ RSS
 # ========================
 def fetch_via_rss(rss_url: str) -> List[Dict]:
@@ -145,7 +168,7 @@ def fetch_via_rss(rss_url: str) -> List[Dict]:
         for e in feed.entries[:30]:
             link = getattr(e, "link", None)
             title = getattr(e, "title", None)
-            if not link or not title:
+            if not link or not title or is_political(title):
                 continue
             summary = getattr(e, "summary", "")
             items.append({"title": title.strip(), "link": link.strip(), "summary": (summary or "").strip()})
@@ -168,7 +191,7 @@ def fetch_html_tourdom(list_url: str) -> List[Dict]:
     for a in soup.select("article a[href], .news-list a[href], .news a[href]"):
         href = a.get("href")
         title = (a.get_text() or "").strip()
-        if not href or not title:
+        if not href or not title or is_political(title):
             continue
         link = absolute(list_url, href)
         if "/news/" in link and same_host(link, "tourdom.ru") and 15 <= len(title) <= 160:
@@ -178,6 +201,8 @@ def fetch_html_tourdom(list_url: str) -> List[Dict]:
         for a in soup.select("a[href*='/news/']"):
             href = a.get("href")
             title = (a.get_text() or "").strip()
+            if not title or is_political(title):
+                continue
             link = absolute(list_url, href)
             if same_host(link, "tourdom.ru") and title and 15 <= len(title) <= 160:
                 candidates.append({"title": title, "link": link, "summary": ""})
@@ -201,13 +226,13 @@ def fetch_html_tourister(list_url: str) -> List[Dict]:
         return []
     candidates: List[Dict] = []
 
-    for a in soup.select("a[href*='/news/']"):
+    for a in soup.select("a[href*='/publications/']"):
         href = a.get("href")
         title = (a.get_text() or "").strip()
-        link = absolute(list_url, href)
-        if not link or not title:
+        if not href or not title or is_political(title):
             continue
-        if same_host(link, "tourister.ru") and "/news/" in link and 15 <= len(title) <= 160:
+        link = absolute(list_url, href)
+        if same_host(link, "tourister.ru") and "/publications/" in link and 15 <= len(title) <= 160:
             candidates.append({"title": title, "link": link, "summary": ""})
 
     seen, items = set(), []
@@ -220,45 +245,6 @@ def fetch_html_tourister(list_url: str) -> List[Dict]:
             items.append(it)
     return items[:25]
 
-def fetch_html_lenta(list_url: str) -> List[Dict]:
-    """
-    Парсер HTML для Lenta/Travel.
-    """
-    soup = get_html(list_url)
-    if not soup:
-        return []
-    candidates: List[Dict] = []
-
-    for a in soup.select("a[href^='/news/'], a[href*='/news/']"):
-        href = a.get("href")
-        title = (a.get_text() or "").strip()
-        if not href or not title:
-            continue
-        link = absolute(list_url, href)
-        if same_host(link, "lenta.ru") and "/news/" in link and 15 <= len(title) <= 180:
-            candidates.append({"title": title, "link": link, "summary": ""})
-
-    if not candidates:
-        for h in soup.select("h2, h3"):
-            a = h.find("a", href=True)
-            if not a:
-                continue
-            href = a.get("href")
-            title = (a.get_text() or "").strip()
-            link = absolute(list_url, href)
-            if same_host(link, "lenta.ru") and "/news/" in link and 15 <= len(title) <= 180:
-                candidates.append({"title": title, "link": link, "summary": ""})
-
-    seen, items = set(), []
-    for it in candidates:
-        if it["link"] in seen:
-            continue
-        seen.add(it["link"])
-        t = it["title"].lower()
-        if t not in {"подробнее", "ещё", "читать далее"}:
-            items.append(it)
-    return items[:30]
-
 def fetch_via_html(source: Dict) -> List[Dict]:
     """
     Выбирает подходящий HTML-парсер по домену.
@@ -269,8 +255,6 @@ def fetch_via_html(source: Dict) -> List[Dict]:
         return fetch_html_tourdom(url)
     if "tourister.ru" in host:
         return fetch_html_tourister(url)
-    if "lenta.ru" in host:
-        return fetch_html_lenta(url)
 
     soup = get_html(url)
     if not soup:
@@ -279,8 +263,9 @@ def fetch_via_html(source: Dict) -> List[Dict]:
     for a in soup.select("article a[href]"):
         title = (a.get_text() or "").strip()
         href = a.get("href")
-        if title and href:
-            items.append({"title": title, "link": absolute(url, href), "summary": ""})
+        if not title or not href or is_political(title):
+            continue
+        items.append({"title": title, "link": absolute(url, href), "summary": ""})
     return items[:20]
 
 def fetch_source_items(source: Dict) -> List[Dict]:
@@ -300,6 +285,7 @@ async def post_news(context: ContextTypes.DEFAULT_TYPE, item: Dict, source_name:
     """
     Отправляет новость в канал с картинкой и HTML-подписью.
     """
+    logger.info(f"Попытка отправки в канал: {CHANNEL_ID}")
     title = item["title"].strip()
     link = item["link"].strip()
     summary = (item.get("summary") or "").strip()
@@ -334,6 +320,7 @@ async def post_news(context: ContextTypes.DEFAULT_TYPE, item: Dict, source_name:
         logger.info(f"Posted: {title} | {link}")
     except Exception as e:
         logger.error(f"Send failed for {link}: {e}")
+        raise
 
 # ========================
 # ДЖОБ: ПЕРИОДИЧЕСКАЯ ПРОВЕРКА
@@ -383,13 +370,14 @@ async def main():
     if not BOT_TOKEN:
         raise SystemExit("❌ Укажите BOT_TOKEN в переменной окружения.")
     if not CHANNEL_ID:
-        logger.warning("⚠️ CHANNEL_ID не задан. Укажите @username канала или ID вида -100xxxxxxxxxxxx")
+        raise SystemExit("❌ Укажите CHANNEL_ID в переменной окружения (например, @YourChannel или -100xxxxxxxxxxxx).")
     if not WEBHOOK_URL:
         raise SystemExit("❌ Укажите WEBHOOK_URL в переменной окружения (например, https://travel-9x10.onrender.com).")
 
     init_db()
 
     # Создаем приложение PTB
+    global app
     app = Application.builder().token(BOT_TOKEN).build()
 
     # Регистрируем команды
@@ -441,28 +429,27 @@ async def stop(app: Application):
     Корректное завершение работы приложения.
     """
     try:
-        if app.running:
+        if app and app.running:
             await app.stop()
             await app.updater.stop()
             await app.shutdown()
             logger.info("Бот остановлен.")
+        else:
+            logger.warning("Приложение не запущено, пропускаем остановку.")
     except Exception as e:
         logger.error(f"Ошибка при остановке приложения: {e}")
 
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()  # Создаём новый цикл событий
-    asyncio.set_event_loop(loop)
     app = None
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        app = Application.builder().token(BOT_TOKEN).build()
         loop.run_until_complete(main())
     except KeyboardInterrupt:
         logger.info("Получен сигнал завершения.")
-        if app:
-            loop.run_until_complete(stop(app))
+        loop.run_until_complete(stop(app))
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        if app:
-            loop.run_until_complete(stop(app))
+        loop.run_until_complete(stop(app))
     finally:
         loop.close()
