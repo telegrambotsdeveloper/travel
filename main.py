@@ -1,10 +1,3 @@
-# ==================================================================================================
-# NewsBot — телеграм-бот, который периодически проверяет новостные сайты и постит анонсы в канал.
-# --------------------------------------------------------------------------------------------------
-# Адаптировано для Render.com: использует webhook, совместим с бесплатным планом.
-# Исправлено управление циклом событий для избежания ошибки "event loop is already running".
-# ==================================================================================================
-
 import asyncio
 import logging
 import os
@@ -26,7 +19,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # ========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Например, https://your-bot.onrender.com
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Например, https://travel-9x10.onrender.com
 PORT = int(os.getenv("PORT", 8443))  # Render задаёт PORT, fallback на 8443
 
 CHECK_INTERVAL_SECONDS = 60 * 60  # Проверка каждые 60 минут
@@ -392,7 +385,7 @@ async def main():
     if not CHANNEL_ID:
         logger.warning("⚠️ CHANNEL_ID не задан. Укажите @username канала или ID вида -100xxxxxxxxxxxx")
     if not WEBHOOK_URL:
-        raise SystemExit("❌ Укажите WEBHOOK_URL в переменной окружения (например, https://your-bot.onrender.com).")
+        raise SystemExit("❌ Укажите WEBHOOK_URL в переменной окружения (например, https://travel-9x10.onrender.com).")
 
     init_db()
 
@@ -427,41 +420,49 @@ async def main():
     await app.start()
 
     # Запускаем webhook-сервер
-    await app.updater.start_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=webhook_path,
-        webhook_url=full_webhook_url,
-    )
+    try:
+        await app.updater.start_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=webhook_path,
+            webhook_url=full_webhook_url,
+        )
+        logger.info("Бот запущен. Ожидание обновлений...")
+    except Exception as e:
+        logger.error(f"Ошибка при запуске webhook: {e}")
+        raise
 
-    logger.info("Бот запущен. Ожидание обновлений...")
-
-    # Держим приложение активным (бесконечный цикл)
+    # Держим приложение активным
     while True:
-        await asyncio.sleep(3600)  # Периодическая проверка, чтобы не завершать цикл
+        await asyncio.sleep(3600)
 
-async def stop():
+async def stop(app: Application):
     """
     Корректное завершение работы приложения.
     """
-    app = Application.builder().token(BOT_TOKEN).build()
-    await app.stop()
-    await app.updater.stop()
-    await app.shutdown()
-    logger.info("Бот остановлен.")
+    try:
+        if app.running:
+            await app.stop()
+            await app.updater.stop()
+            await app.shutdown()
+            logger.info("Бот остановлен.")
+    except Exception as e:
+        logger.error(f"Ошибка при остановке приложения: {e}")
 
 if __name__ == "__main__":
+    loop = asyncio.new_event_loop()  # Создаём новый цикл событий
+    asyncio.set_event_loop(loop)
+    app = None
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            logger.warning("Цикл событий уже запущен, использую существующий.")
-            # Запускаем main как задачу в существующем цикле
-            loop.create_task(main())
-        else:
-            loop.run_until_complete(main())
+        app = Application.builder().token(BOT_TOKEN).build()
+        loop.run_until_complete(main())
     except KeyboardInterrupt:
         logger.info("Получен сигнал завершения.")
-        loop.run_until_complete(stop())
+        if app:
+            loop.run_until_complete(stop(app))
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        loop.run_until_complete(stop())
+        if app:
+            loop.run_until_complete(stop(app))
+    finally:
+        loop.close()
