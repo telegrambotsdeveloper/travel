@@ -1,10 +1,3 @@
-# ==================================================================================================
-# NewsBot — телеграм-бот, который периодически проверяет новостные сайты и постит анонсы в канал.
-# --------------------------------------------------------------------------------------------------
-# Адаптировано для Render.com: использует webhook, совместим с бесплатным планом.
-# Исправлены проблемы с tourister.ru, исключены политические новости, удалён lenta.ru.
-# ==================================================================================================
-
 import asyncio
 import logging
 import os
@@ -17,9 +10,13 @@ from urllib.parse import urljoin, urlparse
 import feedparser
 import requests
 from bs4 import BeautifulSoup
+from flask import Flask
 from telegram import BotCommand, Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes
+
+# Инициализация Flask
+flask_app = Flask(__name__)
 
 # ========================
 # НАСТРОЙКИ
@@ -54,6 +51,11 @@ logger = logging.getLogger("newsbot")
 
 session = requests.Session()
 session.headers.update({"User-Agent": USER_AGENT})
+
+# Маршрут для корневого URL, чтобы UptimeRobot и браузер не получали 404
+@flask_app.route('/')
+def home():
+    return "Travel bot is alive!", 200
 
 # ========================
 # ХРАНИЛИЩЕ ДЕДУПЛИКАЦИИ
@@ -407,7 +409,15 @@ async def main():
     await app.initialize()
     await app.start()
 
-    # Запускаем webhook-сервер
+    # Запускаем Flask в отдельном потоке
+    from threading import Thread
+    def run_flask():
+        flask_app.run(host="0.0.0.0", port=PORT, debug=False)
+    
+    flask_thread = Thread(target=run_flask)
+    flask_thread.start()
+
+    # Запускаем webhook для PTB
     try:
         await app.updater.start_webhook(
             listen="0.0.0.0",
