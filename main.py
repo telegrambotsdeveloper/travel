@@ -58,18 +58,29 @@ app = None
 # Маршрут для корневого URL, чтобы UptimeRobot и браузер не получали 404
 @flask_app.route('/')
 def home():
+    logger.info("Received request to root URL")
     return "Travel bot is alive!", 200
 
 # Маршрут для обработки вебхука Telegram
 @flask_app.route('/webhook', methods=['POST'])
 async def webhook():
     global app
+    logger.info("Received webhook request")
     if not app:
+        logger.error("Application not initialized")
         return Response("Bot not initialized", status=503)
-    update = Update.de_json(request.get_json(force=True), app.bot)
-    if update:
-        await app.process_update(update)
-    return Response("OK", status=200)
+    try:
+        update = Update.de_json(request.get_json(force=True), app.bot)
+        if update:
+            logger.info(f"Processing update: {update.update_id}")
+            await app.process_update(update)
+            return Response("OK", status=200)
+        else:
+            logger.warning("Invalid update received")
+            return Response("Invalid update", status=400)
+    except Exception as e:
+        logger.error(f"Webhook processing error: {e}")
+        return Response(f"Error: {e}", status=500)
 
 # ========================
 # ХРАНИЛИЩЕ ДЕДУПЛИКАЦИИ
@@ -360,18 +371,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /start — приветственное сообщение.
     """
+    logger.info("Received /start command")
     await update.message.reply_text("Привет! Я раз в час проверяю новые новости и публикую их в канале.")
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /ping — проверка, что бот работает.
     """
+    logger.info("Received /ping command")
     await update.message.reply_text("Работаю ✅")
 
 async def checknow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /checknow — немедленная проверка источников.
     """
+    logger.info("Received /checknow command")
     await update.message.reply_text("Проверяю источники…")
     await check_sources_job(context)
     await update.message.reply_text("Готово ✅")
@@ -385,10 +399,13 @@ async def main():
     """
     global app
     if not BOT_TOKEN:
+        logger.error("BOT_TOKEN not set")
         raise SystemExit("❌ Укажите BOT_TOKEN в переменной окружения.")
     if not CHANNEL_ID:
+        logger.error("CHANNEL_ID not set")
         raise SystemExit("❌ Укажите CHANNEL_ID в переменной окружения (например, @YourChannel или -100xxxxxxxxxxxx).")
     if not WEBHOOK_URL:
+        logger.error("WEBHOOK_URL not set")
         raise SystemExit("❌ Укажите WEBHOOK_URL в переменной окружения (например, https://travel-9x10.onrender.com).")
 
     init_db()
@@ -405,25 +422,39 @@ async def main():
     app.job_queue.run_repeating(check_sources_job, interval=CHECK_INTERVAL_SECONDS, first=10)
 
     # Регистрируем команды в Telegram
-    await app.bot.set_my_commands(
-        [
-            BotCommand("start", "Поприветствовать"),
-            BotCommand("ping", "Проверить, жив ли бот"),
-            BotCommand("checknow", "Проверить источники сейчас"),
-        ]
-    )
+    try:
+        await app.bot.set_my_commands(
+            [
+                BotCommand("start", "Поприветствовать"),
+                BotCommand("ping", "Проверить, жив ли бот"),
+                BotCommand("checknow", "Проверить источники сейчас"),
+            ]
+        )
+        logger.info("Commands registered successfully")
+    except Exception as e:
+        logger.error(f"Failed to register commands: {e}")
 
     # Настраиваем webhook
     webhook_path = "/webhook"
     full_webhook_url = f"{WEBHOOK_URL}{webhook_path}"
-    await app.bot.set_webhook(url=full_webhook_url)
-    logger.info(f"Webhook установлен на {full_webhook_url}")
+    try:
+        await app.bot.set_webhook(url=full_webhook_url)
+        logger.info(f"Webhook установлен на {full_webhook_url}")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
+        raise
 
     # Инициализируем приложение
-    await app.initialize()
-    await app.start()
+    try:
+        await app.initialize()
+        await app.start()
+        logger.info("Application initialized and started")
+    except Exception as e:
+        logger.error(f"Failed to initialize application: {e}")
+        raise
 
     # Запускаем Flask-сервер
+    logger.info(f"Starting Flask server on port {PORT}")
     flask_app.run(host="0.0.0.0", port=PORT, debug=False)
 
 async def stop():
